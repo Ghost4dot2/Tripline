@@ -1,0 +1,352 @@
+#ifndef TRIPLINE_H
+#define TRIPLINE_H
+
+#define MAXTRAPS 16
+
+#include <iostream>
+#include <iochannel.hpp>
+
+
+namespace pawlib
+{
+
+    /*This struct conatins every function pointer and ther priority level,
+    this is for efficient interrupt handling */
+    template <class room>
+    struct container
+    {
+        void (*funcptr)();
+        //The level is limited to a max of three a min of zero
+        int level;
+        //the activator is the value that causes the function to be called in the following class
+        room activator;
+
+    };
+
+
+
+    template <class trigger>
+    class Tripline
+    {
+        private:
+            //the wire is the actual value contained by tripline
+            trigger wire;
+
+            //armed indicates whether all interrupts are active or not
+            bool armed;
+
+            //prevents the value from being changed. not currently used but may be needed for Breakdown
+            bool val_lock;
+
+            //a maximum of 16 function pointers can be registerd at any given time
+            container<trigger> trap[MAXTRAPS];
+
+            //indicates the number of interupts currently registered
+            int trap_num;
+
+            /*level lock prevents interrupts of the same level or higher from interrtupting
+            The lock is reset to -1 when no levels are locked*/
+            int level_lock;
+
+
+
+        public:
+            Tripline()
+            {
+                //interrupts begin disabled
+                armed = false;
+                trap_num = 0;
+                level_lock = -1;
+                val_lock = false;
+                trap[0].level = 0;
+            }
+            /*initial value is set to param*/
+            // cppcheck-suppress noExplicitConstructor
+            Tripline(trigger param)
+            {
+                wire = param;
+                //interrupts begin disabled
+                armed = false;
+                trap_num = 0;
+                level_lock = -1;
+                val_lock = false;
+                trap[0].level = 0;
+            }
+            Tripline(const Tripline& param)
+            {
+                wire = param.getVal();
+                //interrupts begin disabled
+                armed = false;
+                trap_num = 0;
+                level_lock = -1;
+                val_lock = false;
+                trap[0].level = 0;
+            }
+            /*activates interrups
+            interrupts begin deactivated*/
+            void arm()
+            {
+                armed = true;
+            }
+            //deactivates interrupts
+            void disarm()
+            {
+                armed = false;
+            }
+            // returns the value of the tripline variable
+            trigger getVal() const
+            {
+                return wire;
+            }
+            //sets the value of the tripline variable
+            trigger setVal(trigger val)
+            {
+
+                //val_lock is added here as a potential feature of Tripline but may not be implemented
+                if(!val_lock)
+                    wire = val;
+                return wire;
+            }
+
+            //registers a function and the value that will activate the function
+            void register_function(void (*func)(), trigger pin)
+            {
+                /* only a maximum of 16 functions can be registered
+                if more functions are registered then it overrights the first
+                one registered */
+                trap[trap_num % MAXTRAPS].funcptr = func;
+                trap[trap_num % MAXTRAPS].level = 0;
+                trap[trap_num % MAXTRAPS].activator = pin;
+
+                trap_num++;
+
+
+            }
+            void register_function(void(*func)(),trigger pin, int priority)
+            {
+
+
+                trap[trap_num % MAXTRAPS].funcptr = func;
+                // limit the priority level of interrupts to be from 0 to 3
+                trap[trap_num % MAXTRAPS].level = priority % 3;
+                trap[trap_num % MAXTRAPS].activator = pin;
+
+                trap_num++;
+
+            }
+            /* overloads the = operator to set the value of the Tripline variable
+            additionally handles any interrupts that may activate */
+            trigger operator=(const trigger param)
+            {
+                 // sets the value passed
+                setVal(param);
+
+                //checks to see if interrupts are activated before continuing
+                if(armed)
+                {
+                    //goes through all the traps initially registered
+                    for(int i = 0; i < trap_num; ++i)
+                    {
+                        /*This if statement handles both the interrupts activation and
+                        prevents intterupts of same or lower level from activating */
+                        if(trap[i].activator == param && trap[i].level > level_lock)
+                        {
+                            //sets which levels are locked as the interrupt is called
+                            level_lock = trap[i].level;
+                            //calls function that interrupt is connected to
+                            trap[i].funcptr();
+                            //unlocks for all levels for next interrupt to be called
+                            level_lock = -1;
+
+                        }
+
+                    }
+                }
+
+                //returns the value passed
+                return param;
+            }
+            //This function works exactly as above but allows one to get the value from a different tripline variable
+            Tripline& operator=(const Tripline& param)
+            {
+                setVal(param.getVal());
+                if(armed)
+                {
+                    for(int i = 0; i < trap_num; ++i)
+                    {
+                        if(trap[i].activator == param && trap[i].level > level_lock)
+                        {
+                            level_lock = trap[i].level;
+                            trap[i].funcptr();
+                            //unlocks for all levels
+                            level_lock = -1;
+
+                        }
+
+                    }
+                }
+                return *this;
+            }
+            /* The following functions overload the << operator for both iostream and iochannel
+            Only these 2 streams are overloaded because iochannel is shipped with tripline and iostream
+            is the general use output stream*/
+            //iostream's function overload
+            friend std::ostream& operator<<(std::ostream& outs, const Tripline& item)
+            {
+                //puts the value of the tripline value into the iostream buffer
+                outs << item.getVal();
+                //returns the buffer for output
+                return outs;
+            }
+            //iochannel's funciton overload
+            friend iochannel& operator<<(iochannel& outs, const Tripline& item)
+            {
+                //puts the value of the tripline value into the iochannel buffer
+                outs << item.getVal();
+                //returns teh buffer for output
+                return outs;
+            }
+
+            /*This function overloads the  >> for input so that the tripline
+            variable may behave like a normal variable */
+            friend std::istream& operator>>(std::istream& input, Tripline &item)
+            {
+                trigger temp;
+                //gets the value from the input buffer
+                input >> temp;
+                /*This value then uses setVal (via the = operator)
+                 so that interrupts are handled as necessary */
+                item = temp;
+                //returns the buffer
+                return input;
+
+            }
+
+            /*below is a list of comparison operators that have been overloaded. Each is done
+            3 times for to allow the user to treat the Tripline variable as a regular variable
+            for all purposes*/
+
+            //overloading the == operator
+
+            /*compares a regular value to a Tripline variable.
+            Special Note: friend allows this operator to be overloaded with 2 arguments instead of 1.
+            without friend it implicitly takes this (this being the class) as the right side of the equation */
+            friend bool operator==(const trigger val, const Tripline& item)
+            {
+                return (val == item.getVal());
+            }
+            //compares a Tripline variable with a regular value
+            bool operator==(const trigger val)
+            {
+                return (wire == val);
+            }
+            //compares 2 Tripline objects
+            bool operator==(const Tripline &item)
+            {
+                return (item.getVal() == wire);
+            }
+
+
+            //overloading the != operator
+            //compares a regular value to a Tripline variable
+            friend bool operator!=(const trigger val, const Tripline &item)
+            {
+                return !(val == item);
+            }
+            //compares a Tripline variable with a regular value
+            bool operator!=(const trigger val)
+            {
+                return !(wire == val);
+            }
+            //compares 2 Tripline objects
+            bool operator!=(const Tripline &item)
+            {
+                return !(item.getVal() == wire);
+            }
+
+            //overloading the > operator
+            //compares a regular value to a Tripline variable
+            friend bool operator>(const trigger val, const Tripline &item)
+            {
+                return val > item.getVal();
+            }
+            //compares a Tripline variable with a regular value
+            bool operator>(const trigger val)
+            {
+                return wire > val;
+            }
+            //compares 2 Tripline objects
+            bool operator>(const Tripline &item)
+            {
+                return  wire > item.getVal();
+            }
+
+
+            //overloading the < operator
+            //compares a regular value to a Tripline variable
+            friend bool operator<(const trigger val, const Tripline &item)
+            {
+                return val < item.getVal();
+            }
+            //compares a Tripline variable with a regular value
+            bool operator<(const trigger val)
+            {
+                return wire < val;
+            }
+            //compares 2 Tripline objects
+            bool operator<(const Tripline &item)
+            {
+                return  wire <  item.getVal();
+            }
+
+
+            //overloading the <= operator
+            //compares a regular value to a Tripline variable
+            friend bool operator<=(const trigger val, const Tripline &item)
+            {
+                return val <= item.getVal();
+            }
+            //compares a Tripline variable with a regular value
+            bool operator<=(const trigger val)
+            {
+                return wire <= val;
+            }
+            //compares 2 Tripline objects
+            bool operator<=(const Tripline &item)
+            {
+                return  wire <= item.getVal();
+            }
+
+
+            //overloading the >=operator
+            //compares a regular value to a Tripline variable
+            friend bool operator>=(const trigger val, const Tripline &item)
+            {
+                return val >= item.getVal();
+            }
+            //compares a Tripline variable with a regular value
+            bool operator>=(const trigger val)
+            {
+                return wire >= val;
+            }
+            //compares 2 Tripline objects
+            bool operator>=(const Tripline &item)
+            {
+                return wire >= item.getVal();
+            }
+
+
+
+        protected:
+            void do_nothing();
+
+
+
+    };
+
+
+
+}
+
+
+#endif
